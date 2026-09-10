@@ -1,9 +1,18 @@
 'use strict';
 
 const { app, BrowserWindow, dialog } = require('electron');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const http = require('node:http');
 const path = require('node:path');
+
+// Optional startup helper (packaged through build.files "scripts/**/*"). A
+// packaging miss must degrade to "no sync", never to a broken startup.
+let syncModelCatalog = async () => {};
+try {
+  syncModelCatalog = require('./scripts/model-sync.cjs').syncModelCatalog;
+} catch (error) {
+  console.error('[model-sync] helper unavailable:', error.message);
+}
 
 const HOST = '127.0.0.1';
 const URL_LINE = /http:\/\/[\w.:-]+/;
@@ -94,6 +103,27 @@ function startServer() {
   });
 }
 
+/**
+ * Stop the harness server and everything it spawned.
+ *
+ * The folder-dialog worker is a grandchild (main -> server -> worker). A plain
+ * `kill()` only reaps the server, leaving the worker — and its modal dialog —
+ * alive as an orphan; that stray dialog then sits on screen and the next run
+ * reads as "选择目录没反应". On Windows `taskkill /T` takes the whole tree.
+ */
+function stopServer() {
+  if (serverProc === null || serverProc.killed || serverProc.exitCode !== null) return;
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/PID', String(serverProc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      return;
+    } catch (error) {
+      console.error('[dsh] taskkill failed, falling back to kill():', error.message);
+    }
+  }
+  serverProc.kill();
+}
+
 function createWindow(port) {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -126,6 +156,11 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     startServer();
+    // Background model-catalog sync: mirrors api.deepseek.com/models into the
+    // hot-reloaded `llm-deepseek.models` settings section so freshly released
+    // models show up and retired ones disappear. Deliberately not awaited — the
+    // window must never wait on the network, and the call never rejects.
+    syncModelCatalog().catch(() => {});
   });
 
   app.on('window-all-closed', () => {
@@ -133,8 +168,6 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('will-quit', () => {
-    if (serverProc && !serverProc.killed) {
-      serverProc.kill();
-    }
+    stopServer();
   });
 }

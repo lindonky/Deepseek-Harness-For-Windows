@@ -140,6 +140,8 @@
     "asar": false,
     "files": [
       "main.js",
+      "scripts/**/*",
+      "!scripts/*.test.cjs",
       "package.json",
       "node_modules/**/*"
     ],

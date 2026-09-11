@@ -1,9 +1,13 @@
 'use strict';
 
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, screen } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
+const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
+
+const { parseServerUrl, startupFailureMessage, systemProxyEnv } = require('./scripts/shell-utils.cjs');
 
 // Optional startup helper (packaged through build.files "scripts/**/*"). A
 // packaging miss must degrade to "no sync", never to a broken startup.
@@ -15,11 +19,31 @@ try {
 }
 
 const HOST = '127.0.0.1';
-const URL_LINE = /http:\/\/[\w.:-]+/;
-const PORT_RE = /:(\d+)\/?$/;
+
+// A packaged GUI has no visible stdout, so every server line is also written to
+// a log the error dialogs can point at. os.tmpdir() is used because the drive
+// root is not reliably writable.
+const LOG_FILE = path.join(os.tmpdir(), 'deepseek-harness.log');
+const LOG_LIMIT_BYTES = 2 * 1024 * 1024;
+const STDERR_KEEP_CHARS = 8 * 1024;
 
 let serverProc = null;
 let mainWindow = null;
+let startupFailed = false;
+let shuttingDown = false;
+let stdoutBuf = '';
+let stderrBuf = '';
+
+function logLine(tag, text) {
+  const line = `[${new Date().toISOString()}] [${tag}] ${text}`;
+  console.log(line);
+  try {
+    if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > LOG_LIMIT_BYTES) fs.writeFileSync(LOG_FILE, '');
+    fs.appendFileSync(LOG_FILE, `${line}${os.EOL}`);
+  } catch {
+    /* logging must never be the reason startup fails */
+  }
+}
 
 function dshBinPath() {
   // @deepseek-ai/dsh ships the CLI entry at lib/bin.js
@@ -29,6 +53,7 @@ function dshBinPath() {
 function probe(port, timeoutMs = 1500) {
   return new Promise((resolve) => {
     const req = http.get({ host: HOST, port, path: '/', timeout: timeoutMs }, (res) => {
+      // Any HTTP answer (including the auth fence's 401) means the server is up.
       res.resume();
       resolve(true);
     });
@@ -48,58 +73,74 @@ async function waitForServer(port, attempts = 120) {
   return false;
 }
 
+/** Report one startup problem (with the log path) and exit instead of dying silently. */
+function failStartup(what, detail) {
+  if (startupFailed) return;
+  startupFailed = true;
+  logLine('shell', `startup failed: ${what}`);
+  stopServer();
+  dialog.showErrorBox('DeepSeek Harness', startupFailureMessage(what, detail ?? stderrBuf, LOG_FILE));
+  app.quit();
+}
+
 function startServer() {
   const bin = dshBinPath();
-  // --expose-internals is required by the web profile's HMR plugin.
-  const args = ['--expose-internals', bin, 'web', '--host', HOST, '--port', '0'];
+  // --expose-internals became unnecessary once 0.1.5 dropped the HMR loader
+  // requirement; it is still a valid Node flag, so it stays for compatibility
+  // with older builds this shell may be pointed at.
+  //
+  // --no-open matters on 0.1.5+: dsh web now hands off to the default browser
+  // by default, which would open a second window next to this shell.
+  const args = ['--expose-internals', bin, 'web', '--host', HOST, '--port', '0', '--no-open'];
+
+  // A desktop launch inherits a launch directory that varies (shortcut,
+  // Explorer, portable extraction). dsh uses process.cwd() as the fallback
+  // workspace root for sessions without their own cwd, so pin something
+  // predictable instead of letting the sandbox root drift per launch.
+  const proxyEnv = systemProxyEnv();
+  if (Object.keys(proxyEnv).length > 0) logLine('shell', `proxy env: ${JSON.stringify(proxyEnv)}`);
+
   serverProc = spawn(process.execPath, args, {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    cwd: os.homedir(),
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...proxyEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
+  logLine('shell', `server pid ${String(serverProc.pid)}; log ${LOG_FILE}`);
 
-  let buf = '';
   serverProc.stdout.on('data', (d) => {
     const text = d.toString();
-    console.log('[dsh]', text.trim());
-    buf += text;
-    // The server prints its URL ("dsh web: http://127.0.0.1:PORT"); parse it once.
-    if (!mainWindow) {
-      const m = buf.match(URL_LINE);
-      if (m) {
-        const pm = m[0].match(PORT_RE);
-        if (pm) {
-          const port = Number(pm[1]);
-          if (Number.isInteger(port)) {
-            waitForServer(port).then((ok) => {
-              if (ok) {
-                createWindow(port);
-              } else {
-                dialog.showErrorBox(
-                  'DeepSeek Harness',
-                  'The harness server started but is not responding. See the console output for details.'
-                );
-                app.quit();
-              }
-            });
-          }
-        }
-      }
-    }
+    stdoutBuf += text;
+    if (stdoutBuf.length > 64 * 1024) stdoutBuf = stdoutBuf.slice(-64 * 1024);
+    for (const line of text.split(/\r?\n/)) if (line.trim().length > 0) logLine('dsh', line);
+    if (mainWindow !== null) return;
+    // 0.1.5 prints the readiness line with the auth token:
+    //   dsh web: http://127.0.0.1:PORT/?token=…  (LAN: …)
+    // The window must load that URL verbatim: a bare / answers 401.
+    const parsed = parseServerUrl(stdoutBuf);
+    if (parsed === undefined) return;
+    waitForServer(parsed.port).then((ok) => {
+      if (startupFailed || mainWindow !== null) return;
+      if (ok) createWindow(parsed.url);
+      else failStartup('服务已启动但一直没有响应（可能是插件加载失败）');
+    });
   });
 
   serverProc.stderr.on('data', (d) => {
-    console.error('[dsh]', d.toString().trim());
+    const text = d.toString();
+    stderrBuf = `${stderrBuf}${text}`.slice(-STDERR_KEEP_CHARS);
+    for (const line of text.split(/\r?\n/)) if (line.trim().length > 0) logLine('dsh!', line);
   });
 
   serverProc.on('error', (err) => {
-    dialog.showErrorBox('DeepSeek Harness', `Failed to start the harness server:\n${err.message}`);
-    app.quit();
+    failStartup(`无法启动服务进程：${err.message}`);
   });
 
   serverProc.on('exit', (code) => {
-    console.log('[dsh] server exited with code', code);
-    if (!mainWindow) app.quit();
+    logLine('shell', `server exited with code ${String(code)}`);
+    if (startupFailed || shuttingDown) return;
+    if (mainWindow === null) failStartup(`服务进程提前退出（code ${String(code)}）`);
+    else failStartup(`服务进程意外退出（code ${String(code)}），窗口已无法继续工作`);
   });
 }
 
@@ -124,10 +165,12 @@ function stopServer() {
   serverProc.kill();
 }
 
-function createWindow(port) {
+function createWindow(serverUrl) {
+  // Fit small laptop work areas (a fixed 1400x900 window can exceed them).
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: Math.min(1400, width),
+    height: Math.min(900, height),
     title: 'DeepSeek Harness',
     autoHideMenuBar: true,
     webPreferences: {
@@ -137,7 +180,13 @@ function createWindow(port) {
     },
   });
 
-  mainWindow.loadURL(`http://${HOST}:${port}/`);
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl) => {
+    if (errorCode === -3) return; // aborted navigation, not a failure
+    logLine('shell', `window failed to load ${validatedUrl}: ${errorCode} ${errorDescription}`);
+    failStartup(`界面加载失败：${errorDescription}`, stderrBuf);
+  });
+
+  mainWindow.loadURL(serverUrl);
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -168,6 +217,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('will-quit', () => {
+    shuttingDown = true; // an intentional shutdown is not a crash
     stopServer();
   });
 }

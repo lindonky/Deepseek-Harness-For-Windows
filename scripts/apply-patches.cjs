@@ -9,46 +9,24 @@ const path = require('node:path')
 const repoRoot = path.resolve(__dirname, '..')
 const installRoot = process.argv[2] === undefined ? repoRoot : path.resolve(process.argv[2])
 
-/** Verbatim replacements: `from` is copied over `to`. */
-const replacements = [
-  {
-    from: 'patches/dsh-subprocess-local/index.js',
-    to: 'node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js',
-    why: 'Windows process inspector for persistent PTY shells',
-  },
-  {
-    from: 'patches/dsh-terminal-bash/index.js',
-    to: 'node_modules/@deepseek-ai/dsh-terminal-bash/lib/index.js',
-    why: 'Git Bash autodetection and optional sandbox bypass on Windows',
-  },
-  {
-    from: 'patches/dsh-minimal/agent.cordis.yml',
-    to: 'node_modules/@deepseek-ai/dsh/config/agent-presets/minimal/agent.cordis.yml',
-    why: 'Windows minimal preset shell path, sandbox mode, and tool description',
-  },
-]
+/** Verbatim replacements: `from` is copied over `to`.
+ *
+ * Empty since the 0.1.5 upgrade: all three previous entries were superseded
+ * upstream — `dsh-subprocess-local` now ships a win32 process inspector
+ * (`@deepseek-ai/dsh-win32-process`), `terminal-bash` gained `shellDialect`
+ * (bash|pwsh) plus `ctx.sandbox` confinement, and the minimal preset moved to
+ * `dsh-agent-presets` with a native win32 pwsh path. Keeping them would have
+ * meant re-vendoring files that already fixed the same problems — and the old
+ * minimal/terminal patches deliberately bypassed the sandbox.
+ */
+const replacements = []
 
 /** Source transforms: `from` exports `(source) => source` and rewrites `to` in place. */
 const transforms = [
   {
-    from: 'patches/dsh-llm-deepseek/flash-model.cjs',
-    to: 'node_modules/@deepseek-ai/dsh-llm-deepseek/lib/index.js',
-    why: 'Publish the current DeepSeek-Flash model in the model picker',
-  },
-  {
     from: 'patches/dsh-base/llm-retry-policy.cjs',
     to: 'node_modules/@deepseek-ai/dsh-base/cordis.patch.yml',
     why: 'Tolerate longer API outages instead of aborting the task (8 retries, 1s-30s backoff)',
-  },
-  {
-    from: 'patches/dsh-host-directory-picker-native/owner-pid.cjs',
-    to: 'node_modules/@deepseek-ai/dsh-host-directory-picker-native/lib/index.js',
-    why: 'Tell the folder-dialog worker which window should own the dialog',
-  },
-  {
-    from: 'patches/dsh-host-directory-picker-native/owner-window.cjs',
-    to: 'node_modules/@deepseek-ai/dsh-host-directory-picker-native/lib/worker.cjs',
-    why: 'Own the folder dialog by the harness window so Windows keeps it in front',
   },
 ]
 

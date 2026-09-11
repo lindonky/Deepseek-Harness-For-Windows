@@ -180,6 +180,24 @@ function createWindow(serverUrl) {
     },
   });
 
+  // 0.1.5's auth fence answers a bare `/` with 401 as a *successful* HTTP
+  // response, so did-fail-load never fires and the user would just see an error
+  // page. The token exchange sets `dsh-auth-*`; without that cookie the window
+  // is not authenticated, whatever the page looks like.
+  const serverOrigin = new URL(serverUrl).origin;
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow.webContents.session.cookies
+      .get({ url: serverOrigin })
+      .then((cookies) => {
+        const authenticated = cookies.some((cookie) => cookie.name.startsWith('dsh-auth-'));
+        logLine('shell', `window loaded (auth cookie: ${authenticated ? 'present' : 'missing'})`);
+        if (!authenticated) {
+          failStartup('界面已加载但没有取得认证 cookie（token 可能失效或协议变化）', stderrBuf);
+        }
+      })
+      .catch((error) => logLine('shell', `could not read cookies: ${error.message}`));
+  });
+
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl) => {
     if (errorCode === -3) return; // aborted navigation, not a failure
     logLine('shell', `window failed to load ${validatedUrl}: ${errorCode} ${errorDescription}`);

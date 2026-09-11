@@ -6,3 +6,6 @@ Thumbs.db
 
 # dependency-sync backup
 package.json.bak-deps
+
+# 测试用打包输出目录
+dist-*/

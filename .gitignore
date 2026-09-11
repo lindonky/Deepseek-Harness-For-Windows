@@ -9,3 +9,8 @@ package.json.bak-deps
 
 # 测试用打包输出目录
 dist-*/
+
+# 内部资料：交接文档只留本地，不进仓库（含本机路径与排查记录）
+交接文档.md
+*.bak-deps
+*.bak-shell

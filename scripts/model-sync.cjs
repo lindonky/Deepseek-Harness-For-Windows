@@ -1,3 +1,7 @@
+function writeSettings(file, next) {
+  writeAtomic(file, next, BACKUP_SUFFIX)
+}
+
 'use strict'
 
 /**
@@ -30,6 +34,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
+const { isTopLevel, sectionBounds, writeAtomic } = require('./settings-file.cjs')
 
 /** User-settings section owned by `@deepseek-ai/dsh-llm-deepseek`. */
 const SECTION_KEY = 'llm-deepseek'
@@ -135,24 +140,10 @@ async function fetchModelIds(baseURL, apiKey, doFetch) {
   return ids
 }
 
-/** True when the line opens a new top-level mapping key. */
-function isTopLevel(line) {
-  return line.length > 0 && !/^\s/.test(line) && !line.startsWith('#')
-}
-
-/** Bounds of the `llm-deepseek:` section, or undefined when absent. */
-function sectionBounds(lines) {
-  const start = lines.findIndex((line) => line.trim() === `${SECTION_KEY}:`)
-  if (start === -1) return undefined
-  let end = start + 1
-  while (end < lines.length && !isTopLevel(lines[end])) end += 1
-  return { start, end }
-}
-
 /** Ids currently pinned by `llm-deepseek.models`, or undefined when absent. */
 function readModelIds(text) {
   const lines = text.split(/\r?\n/)
-  const bounds = sectionBounds(lines)
+  const bounds = sectionBounds(lines, SECTION_KEY)
   if (bounds === undefined) return undefined
   const section = lines.slice(bounds.start + 1, bounds.end)
   const at = section.findIndex((line) => /^\s*models:/.test(line))
@@ -192,7 +183,7 @@ function writeModelList(text, entries) {
   const block = ['  models:']
   for (const entry of entries) renderEntry(entry, block)
 
-  const bounds = sectionBounds(lines)
+  const bounds = sectionBounds(lines, SECTION_KEY)
   if (bounds === undefined) {
     while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
     const tail = [...(lines.length > 0 ? [''] : []), `${SECTION_KEY}:`, ...block]
@@ -213,7 +204,7 @@ function writeModelList(text, entries) {
 function removeModelList(text) {
   const eol = text.includes('\r\n') ? '\r\n' : '\n'
   const lines = text.split(/\r?\n/)
-  const bounds = sectionBounds(lines)
+  const bounds = sectionBounds(lines, SECTION_KEY)
   if (bounds === undefined) return text
   const section = lines.slice(bounds.start + 1, bounds.end)
   const at = section.findIndex((line) => /^\s*models:/.test(line))

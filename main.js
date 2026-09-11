@@ -18,6 +18,14 @@ try {
   console.error('[model-sync] helper unavailable:', error.message);
 }
 
+// First-run locale default (also packaged through build.files "scripts/**/*").
+let ensureDefaultLocale = () => ({ status: 'unavailable' });
+try {
+  ({ ensureDefaultLocale } = require('./scripts/default-settings.cjs'));
+} catch (error) {
+  console.error('[default-settings] helper unavailable:', error.message);
+}
+
 const HOST = '127.0.0.1';
 
 // A packaged GUI has no visible stdout, so every server line is also written to
@@ -222,6 +230,11 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(() => {
+    // Log the OS language: it decides the UI language (the locale plugin
+    // delegates to the browser unless a preference is stored) and it is the
+    // first thing to check when a report says "界面是英文的".
+    logLine('shell', `system locale: ${app.getLocale()}`);
+    logLine('shell', `locale default: ${ensureDefaultLocale({ locale: app.getLocale() }).status}`);
     startServer();
     // Background model-catalog sync: mirrors api.deepseek.com/models into the
     // hot-reloaded `llm-deepseek.models` settings section so freshly released

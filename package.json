@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-for-windows",
   "productName": "DeepSeek Harness",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Electron desktop wrapper for DeepSeek Harness on Windows",
   "main": "main.js",
   "author": "DeepSeek Harness",
